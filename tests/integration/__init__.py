@@ -1,3 +1,5 @@
+from ccmlib.common import current_cluster_name
+
 try:
     import unittest2 as unittest
 except ImportError:
@@ -17,7 +19,9 @@ except ImportError as e:
     raise unittest.SkipTest('ccm is a dependency for integration tests')
 
 CLUSTER_NAME = 'test_cluster'
+MULTIDC_CLUSTER_NAME = 'multidc_test_cluster'
 CCM_CLUSTER = None
+CASSANDRA_VERSION = '1.2.9'
 
 path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'ccm')
 if not os.path.exists(path):
@@ -63,7 +67,7 @@ def setup_package():
             cluster.clear()
         except Exception:
             log.debug("Creating new ccm test cluster")
-            cluster = CCMCluster(path, CLUSTER_NAME, cassandra_version='1.2.9')
+            cluster = CCMCluster(path, CLUSTER_NAME, cassandra_version=CASSANDRA_VERSION)
             cluster.set_configuration_options({'start_native_transport': True})
             common.switch_cluster(path, CLUSTER_NAME)
             cluster.populate(3)
@@ -77,6 +81,40 @@ def setup_package():
     global CCM_CLUSTER
     CCM_CLUSTER = cluster
     setup_test_keyspace()
+
+def use_multidc(dc_list):
+    if current_cluster_name(path) == MULTIDC_CLUSTER_NAME:
+        return
+
+    global CCM_CLUSTER
+    try:
+        CCM_CLUSTER.remove()
+        CCM_CLUSTER = CCMCluster(path, MULTIDC_CLUSTER_NAME, cassandra_version=CASSANDRA_VERSION)
+        CCM_CLUSTER.set_configuration_options({'start_native_transport': True})
+        common.switch_cluster(path, MULTIDC_CLUSTER_NAME)
+        CCM_CLUSTER.populate(dc_list)
+
+        log.debug("Starting ccm test cluster")
+        CCM_CLUSTER.start(wait_for_binary_proto=True)
+    except Exception:
+        log.exception("Failed to start ccm cluster:")
+        raise
+
+    setup_test_keyspace()
+    log.debug("Switched to multidc cluster")
+
+def use_singledc():
+    if current_cluster_name(path) == CLUSTER_NAME:
+        return
+
+    try:
+        CCM_CLUSTER.remove()
+    except Exception:
+        pass
+
+    setup_package()
+    log.debug("Switched to singledc cluster")
+
 
 def setup_test_keyspace():
     cluster = Cluster()
@@ -114,11 +152,18 @@ def setup_test_keyspace():
 
 
 def teardown_package():
-    if CCM_CLUSTER:
+    for cluster_name in [CLUSTER_NAME, MULTIDC_CLUSTER_NAME]:
         try:
-            CCM_CLUSTER.clear()
+            cluster = CCMCluster.load(path, cluster_name)
+
+            try:
+                cluster.clear()
+                log.info('Cleared cluster: %s' % cluster_name)
+            except Exception:
+                log.exception('Failed to clear cluster: %s' % cluster_name)
+
         except Exception:
-            log.exception("Failed to clear cluster")
+            log.warn('Did not find cluster: %s' % cluster_name)
 
 
 class UpDownWaiter(object):
