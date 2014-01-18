@@ -4,11 +4,12 @@ except ImportError:
     import unittest # noqa
 
 import cassandra
-from cassandra.query import SimpleStatement
+from cassandra.query import SimpleStatement, TraceUnavailable
 from cassandra.io.asyncorereactor import AsyncoreConnection
 from cassandra.policies import RoundRobinPolicy, ExponentialReconnectionPolicy, RetryPolicy, SimpleConvictionPolicy, HostDistance
 
 from cassandra.cluster import Cluster, NoHostAvailable
+
 
 class ClusterTests(unittest.TestCase):
 
@@ -100,7 +101,7 @@ class ClusterTests(unittest.TestCase):
             cluster.shutdown()
             self.fail('A double cluster.shutdown() should throw an error.')
         except Exception as e:
-            self.assertEqual(e.message, 'The Cluster was already shutdown')
+            self.assertIn('The Cluster was already shutdown', str(e))
 
     def test_connect_to_already_shutdown_cluster(self):
         """
@@ -212,6 +213,16 @@ class ClusterTests(unittest.TestCase):
         future = session.execute_async(statement2)
         future.result()
         self.assertEqual(None, future.get_query_trace())
+
+    def test_trace_timeout(self):
+        cluster = Cluster()
+        session = cluster.connect()
+
+        query = "SELECT * FROM system.local"
+        statement = SimpleStatement(query)
+        future = session.execute_async(statement, trace=True)
+        future.result()
+        self.assertRaises(TraceUnavailable, future.get_query_trace, -1.0)
 
     def test_string_coverage(self):
         """

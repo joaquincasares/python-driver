@@ -5,6 +5,7 @@ from collections import defaultdict
 from ccmlib.node import Node
 
 from tests.integration import get_node, get_cluster, CCM_CLUSTER
+from cassandra.decoder import named_tuple_factory
 
 
 log = logging.getLogger(__name__)
@@ -36,11 +37,15 @@ class CoordinatorStats():
 
 def create_schema(session, keyspace, simple_strategy=True,
                   replication_factor=1, replication_strategy=None):
+
+    row_factory = session.row_factory
+    session.row_factory = named_tuple_factory
+
     results = session.execute(
         'SELECT keyspace_name FROM system.schema_keyspaces')
     existing_keyspaces = [row[0] for row in results]
     if keyspace in existing_keyspaces:
-        session.execute('DROP KEYSPACE %s' % keyspace, timeout=10)
+        session.execute('DROP KEYSPACE %s' % keyspace, timeout=20)
 
     if simple_strategy:
         ddl = "CREATE KEYSPACE %s WITH replication" \
@@ -59,6 +64,8 @@ def create_schema(session, keyspace, simple_strategy=True,
     session.execute(ddl % keyspace, timeout=10)
     session.execute('USE %s' % keyspace)
 
+    session.row_factory = row_factory
+
 
 def start(node):
     get_node(node).start()
@@ -70,7 +77,6 @@ def stop(node):
 
 def force_stop(node):
     get_node(node).stop(wait=False, gently=False)
-
 
 def decommission(node):
     get_node(node).decommission()
