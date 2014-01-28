@@ -655,7 +655,7 @@ class Cluster(object):
         reconnector.start()
 
     @run_in_executor
-    def on_down(self, host, is_host_addition):
+    def on_down(self, host, is_host_addition, force_if_down=False):
         """
         Intended for internal use only.
         """
@@ -663,7 +663,7 @@ class Cluster(object):
             return
 
         with host.lock:
-            if (not host.is_up) or host.is_currently_reconnecting():
+            if (not (host.is_up or force_if_down)) or host.is_currently_reconnecting():
                 return
 
             host.set_down()
@@ -686,6 +686,7 @@ class Cluster(object):
 
         log.debug("Adding or renewing pools for new host %s and notifying listeners", host)
         self._prepare_all_queries(host)
+        log.debug("Done preparing queries for new host %s", host)
 
         self.load_balancing_policy.on_add(host)
         self.control_connection.on_add(host)
@@ -713,18 +714,20 @@ class Cluster(object):
                 return
 
             if not all(futures_results):
-                log.warn("Connection pool could not be created, not marking node %s up:", host)
+                log.warn("Connection pool could not be created, not marking node %s up", host)
                 return
 
             self._finalize_add(host)
 
+        have_future = False
         for session in self.sessions:
             future = session.add_or_renew_pool(host, is_host_addition=True)
             if future is not None:
+                have_future = True
                 futures.add(future)
                 future.add_done_callback(future_completed)
 
-        if not futures:
+        if not have_future:
             self._finalize_add(host)
 
     def _finalize_add(self, host):
@@ -752,7 +755,7 @@ class Cluster(object):
     def signal_connection_failure(self, host, connection_exc, is_host_addition):
         is_down = host.signal_connection_failure(connection_exc)
         if is_down:
-            self.on_down(host, is_host_addition)
+            self.on_down(host, is_host_addition, force_if_down=True)
         return is_down
 
     def add_host(self, address, signal):
@@ -819,6 +822,7 @@ class Cluster(object):
             return
 
         log.debug("Preparing all known prepared statements against host %s", host)
+        connection = None
         try:
             connection = self.connection_factory(host.address)
             try:
@@ -855,7 +859,8 @@ class Cluster(object):
         except Exception:
             log.exception("Error trying to prepare all statements on host %s", host)
         finally:
-            connection.close()
+            if connection:
+                connection.close()
 
     def prepare_on_all_sessions(self, query_id, prepared_statement, excluded_host):
         with self._prepared_statement_lock:
@@ -1175,7 +1180,7 @@ class Session(object):
                 self.cluster.signal_connection_failure(host, conn_exc, is_host_addition)
                 return False
             except Exception as conn_exc:
-                log.debug("Signaling connection failure during Session.add_host: %s", conn_exc)
+                log.warn("Failed to create connection pool for new host %s: %s", host, conn_exc)
                 self.cluster.signal_connection_failure(host, conn_exc, is_host_addition)
                 return False
 
@@ -1577,7 +1582,7 @@ class ControlConnection(object):
         change_type = event["change_type"]
         addr, port = event["address"]
         if change_type == "NEW_NODE":
-            self._cluster.scheduler.schedule(1, self._cluster.add_host, addr, signal=True)
+            self._cluster.scheduler.schedule(10, self._cluster.add_host, addr, signal=True)
         elif change_type == "REMOVED_NODE":
             host = self._cluster.metadata.get_host(addr)
             self._cluster.scheduler.schedule(0, self._cluster.remove_host, host)
@@ -1756,7 +1761,8 @@ class _Scheduler(object):
                         return
                     if run_at <= time.time():
                         fn, args, kwargs = task
-                        self._executor.submit(fn, *args, **kwargs)
+                        future = self._executor.submit(fn, *args, **kwargs)
+                        future.add_done_callback(self._log_if_failed)
                     else:
                         self._scheduled.put_nowait((run_at, task))
                         break
@@ -1764,6 +1770,13 @@ class _Scheduler(object):
                 pass
 
             time.sleep(0.1)
+
+    def _log_if_failed(self, future):
+        exc = future.exception()
+        if exc:
+            log.warn(
+                "An internally scheduled tasked failed with an unhandled exception:",
+                exc_info=exc)
 
 
 def refresh_schema_and_set_result(keyspace, table, control_conn, response_future):
