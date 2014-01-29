@@ -21,7 +21,7 @@ except ImportError as e:
 CLUSTER_NAME = 'test_cluster'
 MULTIDC_CLUSTER_NAME = 'multidc_test_cluster'
 CCM_CLUSTER = None
-CASSANDRA_VERSION = '1.2.9'
+CASSANDRA_VERSION = '1.2.13'
 
 path = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'ccm')
 if not os.path.exists(path):
@@ -85,16 +85,22 @@ def setup_package():
     setup_test_keyspace()
 
 def use_multidc(dc_list):
-    if current_cluster_name(path) == MULTIDC_CLUSTER_NAME:
-        return
+    # TODO: Double check logic later
 
     global CCM_CLUSTER
     try:
         CCM_CLUSTER.remove()
-        CCM_CLUSTER = CCMCluster(path, MULTIDC_CLUSTER_NAME, cassandra_version=CASSANDRA_VERSION)
-        CCM_CLUSTER.set_configuration_options({'start_native_transport': True})
-        common.switch_cluster(path, MULTIDC_CLUSTER_NAME)
-        CCM_CLUSTER.populate(dc_list)
+
+        try:
+            cluster = CCMCluster.load(path, MULTIDC_CLUSTER_NAME)
+            log.debug("Found existing ccm test multi-dc cluster, clearing")
+            cluster.clear()
+        except Exception:
+            log.debug("Creating new ccm test multi-dc cluster")
+            CCM_CLUSTER = CCMCluster(path, MULTIDC_CLUSTER_NAME, cassandra_version=CASSANDRA_VERSION)
+            CCM_CLUSTER.set_configuration_options({'start_native_transport': True})
+            common.switch_cluster(path, MULTIDC_CLUSTER_NAME)
+            CCM_CLUSTER.populate(dc_list)
 
         log.debug("Starting ccm test cluster")
         CCM_CLUSTER.start(wait_for_binary_proto=True)
@@ -161,6 +167,7 @@ def teardown_package():
 
             try:
                 cluster.clear()
+                cluster.remove()
                 log.info('Cleared cluster: %s' % cluster_name)
             except Exception:
                 log.exception('Failed to clear cluster: %s' % cluster_name)

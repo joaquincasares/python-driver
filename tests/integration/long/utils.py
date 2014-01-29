@@ -84,20 +84,28 @@ def decommission(node):
 
 
 def bootstrap(node, data_center=None):
-    print 'createnode'
     node_instance = Node('node%s' % node,
                          get_cluster(),
-                         auto_bootstrap=True,
+                         auto_bootstrap=False,
                          thrift_interface=('127.0.0.%s' % node, 9160),
                          storage_interface=('127.0.0.%s' % node, 7000),
                          jmx_port=str(7000 + 100 * node),
                          remote_debug_port=0,
                          initial_token=None)
-    print 'add node'
     get_cluster().add(node_instance, is_seed=False, data_center=data_center)
-    print 'start node'
-    get_node(node).start()
-    print 'done'
+    time.sleep(10)
+
+    try:
+        start(node)
+    except:
+        # Try only twice
+        try:
+            start(node)
+        except:
+            log.error('Added node failed to start twice.')
+
+            # TODO: Remove... for debugging purposes
+            time.sleep(20)
 
 
 def ring(node):
@@ -106,13 +114,21 @@ def ring(node):
 
 
 def wait_for_up(cluster, node, wait=True):
+
+    # TODO: Remove
+    print '1: %s' % node
+
     start_time = time.time()
     while True:
         host = cluster.metadata.get_host('127.0.0.%s' % node)
+
+        # TODO: Remove
+        print '2: %s' % host
+
         if host and host.is_up:
             # BUG: shouldn't have to, but we do
             if wait:
-                time.sleep(5)
+                time.sleep(10)
             return
 
         timeout = 60
